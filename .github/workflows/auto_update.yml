@@ -1,26 +1,35 @@
 name: Auto Update Financial Data
+
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 22 * * *'
+
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 必須確保機器人有寫入權限
+      contents: write
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+
       - name: Install dependencies
-        run: pip install yfinance pandas pandas_datareader requests
+        run: |
+          pip install -r requirements.txt
+
       - name: Run script
         run: python update_data.py
-      - name: Push results
+
+      - name: Commit and Push
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add historical_data.csv
-          git commit -m "Auto update $(date)" || exit 0
+          git commit -m "Automated update $(date)" || echo "No changes to commit"
           git push
