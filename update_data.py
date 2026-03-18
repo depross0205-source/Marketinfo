@@ -7,9 +7,9 @@ import os
 def fetch_all_data():
     start_date = "2003-05-01"
     end_date = datetime.today().strftime('%Y-%m-%d')
-    print(f"🚀 啟動全自動對齊程序：{start_date} ~ {end_date}")
+    print(f"🚀 啟動格式對齊程序：{start_date} ~ {end_date}")
 
-    # 1. 抓取線上日資料
+    # 1. 抓取 Yahoo Finance 日資料
     def get_yf_fix(ticker, name):
         try:
             df = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=False)
@@ -18,57 +18,53 @@ def fetch_all_data():
         except: return pd.Series(name=name)
 
     sp500, sp500ew, vix = get_yf_fix("^GSPC", "SP500"), get_yf_fix("RSP", "SP500EW"), get_yf_fix("^VIX", "VIX")
+    
     try:
         hy = web.get_data_fred("BAMLH0A0HYM2", start_date, end_date)["BAMLH0A0HYM2"].rename("HY_Spread")
         tips = web.get_data_fred("DFII10", start_date, end_date)["DFII10"].rename("TIPS_10Y")
     except:
         hy = pd.Series(name="HY_Spread"); tips = pd.Series(name="TIPS_10Y")
 
-    # 2. 智慧型 CAPE 處理 (不依賴欄位名稱)
+    # 2. 處理本地 CAPE 檔案 (解決日期格式與合併錯誤)
     cape_lookup = pd.Series()
     try:
         target_file = next((f for f in os.listdir('.') if f.lower().startswith('cape') and f.endswith('.csv')), None)
         if target_file:
             print(f"🎯 讀取檔案: {target_file}")
-            # 讀取 CSV，不假設有標題
-            raw_df = pd.read_csv(target_file, header=None)
+            cape_df = pd.read_csv(target_file)
             
-            # 智慧判斷：哪一欄是日期？哪一欄是數值？
-            col_date, col_val = None, None
+            # 強制解析日期 (處理 Mar 17, 2026 格式)
+            # 我們不指定格式，讓 pandas 自動偵測，但加入 errors='coerce' 避免崩潰
+            cape_df['Date_Fixed'] = pd.to_datetime(cape_df.iloc[:, 0], errors='coerce')
             
-            for col in raw_df.columns:
-                # 嘗試解析該欄位的第 2 列數據 (避開標題)
-                sample = str(raw_df[col].iloc[1] if len(raw_df) > 1 else raw_df[col].iloc[0])
-                # 如果包含月份單字或斜線，判定為日期
-                if any(m in sample.lower() for m in ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec','/','-']):
-                    col_date = col
-                # 如果可以轉為數字，判定為數值
-                try:
-                    float(sample.replace(',',''))
-                    if col_val is None: col_val = col
-                except: pass
-
-            if col_date is not None and col_val is not None:
-                print(f"✅ 自動識別：第 {col_date+1} 欄為日期，第 {col_val+1} 欄為數值")
-                
-                # 清洗數據
-                cape_df = pd.DataFrame({
-                    'Date': pd.to_datetime(raw_df[col_date], errors='coerce'),
-                    'Value': pd.to_numeric(raw_df[col_val], errors='coerce')
-                }).dropna()
-                
-                cape_df['YM'] = cape_df['Date'].dt.to_period('M')
-                cape_lookup = cape_df.groupby('YM')['Value'].last().rename('CAPE')
-            else:
-                print("❌ 無法識別 CSV 欄位，請確認內容格式")
+            # 找到數值欄位 (通常是第二欄)
+            val_col = cape_df.iloc[:, 1]
+            
+            # 將日期轉換為 Period['M'] (月份格式)，這是合併成功的關鍵
+            cape_df['YM'] = cape_df['Date_Fixed'].dt.to_period('M')
+            
+            # 建立以「月份」為索引的查詢表
+            cape_lookup = cape_df.dropna(subset=['YM']).groupby('YM').last().iloc[:, 1]
+            cape_lookup.name = 'CAPE'
+            print("✅ CAPE 月份對齊完成")
+        else:
+            print("❌ 找不到 CAPE 檔案")
     except Exception as e:
         print(f"❌ CAPE 處理失敗: {e}")
 
-    # 3. 合併與填補
+    # 3. 合併資料 (核心修正：確保兩邊都是 Period['M'])
     main_df = pd.DataFrame(index=sp500.index)
+    
+    # 建立左邊的月份索引 (Period)
     main_df['YM'] = main_df.index.to_period('M')
+    
+    # 合併日資料
     main_df = main_df.join([sp500, sp500ew, vix, hy, tips])
+    
+    # 合併 CAPE (左邊是 YM 欄位，右邊是索引，且兩者都是 Period[M] 類型)
     main_df = main_df.merge(cape_lookup, left_on='YM', right_index=True, how='left')
+
+    # 填補數據
     main_df = main_df.ffill().bfill()
 
     # 4. 輸出 CSV
@@ -77,7 +73,7 @@ def fetch_all_data():
     final_csv.index.name = 'Date'
     final_csv.index = pd.to_datetime(final_csv.index).tz_localize(None)
     final_csv.to_csv("historical_data.csv")
-    print(f"✅ 更新成功！目前資料總數：{len(final_csv)}")
+    print(f"✅ 更新完成！")
 
 if __name__ == "__main__":
     fetch_all_data()
