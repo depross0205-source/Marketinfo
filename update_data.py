@@ -4,80 +4,81 @@ import pandas as pd
 from datetime import datetime
 
 def fetch_all_data():
-    # 設定最長回測週期
     start_date = "2003-05-01"
     end_date = datetime.today().strftime('%Y-%m-%d')
-    print(f"🚀 開始抓取完整資料庫：{start_date} ~ {end_date}")
+    print(f"🚀 啟動終極對齊程序：{start_date} ~ {end_date}")
 
-    # --- 1. 定義防錯抓取與索引歸一化工具 ---
-    def clean_index(df_or_ser):
-        """將所有索引轉為無時區的 datetime 格式"""
+    # --- 1. 統一格式化函式 ---
+    def to_standard_df(df_or_ser, name):
         if df_or_ser is None or (isinstance(df_or_ser, (pd.Series, pd.DataFrame)) and df_or_ser.empty):
-            return df_or_ser
-        df_or_ser.index = pd.to_datetime(df_or_ser.index).tz_localize(None)
-        return df_or_ser
+            print(f"⚠️ {name} 抓取結果為空")
+            return pd.DataFrame(columns=[name])
+        
+        # 轉為 DataFrame
+        temp_df = df_or_ser.to_frame(name) if isinstance(df_or_ser, pd.Series) else df_or_ser
+        
+        # 【關鍵步驟】強制將索引轉為字串格式 'YYYY-MM-DD'，徹底消除時區與時間戳干擾
+        temp_df.index = pd.to_datetime(temp_df.index).strftime('%Y-%m-%d')
+        # 移除重複日期 (如果有)
+        temp_df = temp_df[~temp_df.index.duplicated(keep='first')]
+        return temp_df
 
-    def get_yf_stable(ticker, name):
-        try:
-            print(f"正在抓取 {name}...")
-            df = yf.download(ticker, start=start_date, end=end_date, progress=False)
-            if df.empty: return pd.Series(name=name, dtype='float64')
-            
-            # 處理 MultiIndex 格式
-            ser = df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']
-            return clean_index(ser).rename(name)
-        except:
-            return pd.Series(name=name, dtype='float64')
-
-    # --- 2. 下載資料 ---
-    # 下載股市資料
-    sp500 = get_yf_stable("^GSPC", "SP500")
-    sp500ew = get_yf_stable("RSP", "SP500EW")
-    vix = get_yf_stable("^VIX", "VIX")
-
-    # 下載 FRED 總經資料
-    print("正在抓取 FRED 總經數據 (利差, TIPS, CAPE)...")
+    # --- 2. 抓取數據 ---
+    print("正在抓取 Yahoo Finance...")
     try:
-        # FRED 數據代碼：BAMLH0A0HYM2 (利差), DFII10 (10Y TIPS), CAPE (席勒本益比)
-        fred = web.get_data_fred(["BAMLH0A0HYM2", "DFII10", "CAPE"], start_date, end_date)
-        fred = clean_index(fred)
-        fred.columns = ['HY_Spread', 'TIPS_10Y', 'CAPE']
-    except Exception as e:
-        print(f"⚠️ FRED 失敗: {e}")
+        yf_raw = yf.download(["^GSPC", "RSP", "^VIX"], start=start_date, end=end_date, progress=False)['Close']
+        # 處理 yfinance 可能的 MultiIndex
+        sp500 = to_standard_df(yf_raw['^GSPC'] if '^GSPC' in yf_raw else None, "SP500")
+        sp500ew = to_standard_df(yf_raw['RSP'] if 'RSP' in yf_raw else None, "SP500EW")
+        vix = to_standard_df(yf_raw['^VIX'] if '^VIX' in yf_raw else None, "VIX")
+    except:
+        sp500, sp500ew, vix = [pd.DataFrame(columns=[c]) for c in ["SP500", "SP500EW", "VIX"]]
+
+    print("正在抓取 FRED (利差, TIPS, CAPE)...")
+    try:
+        # FRED 數據：BAMLH0A0HYM2(利差), DFII10(TIPS), CAPE(席勒本益比)
+        fred_raw = web.get_data_fred(["BAMLH0A0HYM2", "DFII10", "CAPE"], start_date, end_date)
+        fred_raw.columns = ['HY_Spread', 'TIPS_10Y', 'CAPE']
+        fred = to_standard_df(fred_raw, "") # 這裡傳空字串因為已有 columns
+    except:
         fred = pd.DataFrame(columns=['HY_Spread', 'TIPS_10Y', 'CAPE'])
 
-    # 下載 Stooq 資料
-    print("正在抓取 Stooq 市場寬度 (S5TW)...")
+    print("正在抓取 Stooq (S5TW)...")
     try:
-        # ^S5TW 為標普500成分股站上20日線比例
         s5tw_raw = web.DataReader("^S5TW", "stooq", start_date, end_date)
-        s5tw = clean_index(s5tw_raw['Close']).sort_index().rename("S5TW")
+        s5tw = to_standard_df(s5tw_raw['Close'], "S5TW")
     except:
-        s5tw = pd.Series(name="S5TW", dtype='float64')
+        s5tw = pd.DataFrame(columns=["S5TW"])
 
-    # --- 3. 終極合併與填補 ---
-    print("對齊 8 個欄位中...")
-    # 建立主表
-    main_df = pd.DataFrame(index=sp500.index)
+    # --- 3. 合併與填補 ---
+    print("執行強制對齊合併...")
+    # 以 SP500 的日期作為主軸
+    final_df = sp500.copy()
     
-    # 逐一併入 (使用 left join 確保以 SP500 交易日為準)
-    for s in [sp500, sp500ew, vix, fred, s5tw]:
-        if isinstance(s, (pd.Series, pd.DataFrame)):
-            main_df = main_df.join(s, how='left')
+    # 逐一合併其他表
+    for other in [sp500ew, vix, fred, s5tw]:
+        final_df = final_df.merge(other, left_index=True, right_index=True, how='left')
 
-    # 執行前值填補 (ffill) 解決 CAPE 月更新與 API 缺漏問題
-    main_df = main_df.ffill()
+    # 排序日期 (字串排序與日期排序一致)
+    final_df = final_df.sort_index()
 
-    # 確保欄位排序與完整性
+    # 執行前值填補 (ffill) 解決 CAPE 月更新問題
+    final_df = final_df.ffill()
+
+    # --- 4. 產出與驗證 ---
     target_cols = ['SP500', 'SP500EW', 'VIX', 'HY_Spread', 'TIPS_10Y', 'CAPE', 'S5TW']
+    # 補齊可能缺失的欄位
     for col in target_cols:
-        if col not in main_df.columns:
-            main_df[col] = pd.NA
+        if col not in final_df.columns:
+            final_df[col] = ""
 
-    # --- 4. 產出 CSV ---
-    main_df.index.name = 'Date'
-    main_df[target_cols].to_csv("historical_data.csv")
-    print(f"✅ 任務成功！產出檔案：historical_data.csv (共 {len(main_df)} 筆)")
+    final_df = final_df[target_cols]
+    final_df.index.name = 'Date'
+    
+    # 存檔
+    final_df.to_csv("historical_data.csv")
+    print(f"✅ 更新完成！存儲於 historical_data.csv，共 {len(final_df)} 筆數據。")
+    print(f"數據預覽：\n{final_df.tail(3)}")
 
 if __name__ == "__main__":
     fetch_all_data()
