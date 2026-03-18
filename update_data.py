@@ -32,9 +32,9 @@ def fetch_all_data():
         hy = pd.Series(name="HY_Spread"); tips = pd.Series(name="TIPS_10Y")
 
     # 3. 讀取並轉換本地 Cape.csv
-    print("正在轉換本地 Cape.csv...")
+    print("正在轉換本地 cape.csv...")
     try:
-        cape_df = pd.read_csv("Cape.csv")
+        cape_df = pd.read_csv("cape.csv")
         cape_df['Date'] = pd.to_datetime(cape_df['Date'])
         # 將日期格式化為「年-月」
         cape_df['YM'] = cape_df['Date'].dt.to_period('M')
