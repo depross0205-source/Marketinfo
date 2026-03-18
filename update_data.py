@@ -2,17 +2,17 @@ import yfinance as yf
 import pandas_datareader.data as web
 import pandas as pd
 from datetime import datetime
+import os
 
 def fetch_all_data():
     start_date = "2003-05-01"
     end_date = datetime.today().strftime('%Y-%m-%d')
     print(f"🚀 啟動轉檔程序：{start_date} ~ {end_date}")
 
-    # 1. 安全抓取日資料 (修正維度錯誤)
+    # 1. 安全抓取日資料
     def get_yf_fix(ticker, name):
         try:
             df = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=False)
-            # 關鍵修正：確保只取出 Close 欄位並轉為 1D Series
             if isinstance(df.columns, pd.MultiIndex):
                 ser = df['Close'][ticker]
             else:
@@ -31,39 +31,42 @@ def fetch_all_data():
     except:
         hy = pd.Series(name="HY_Spread"); tips = pd.Series(name="TIPS_10Y")
 
-    # 3. 讀取並轉換本地 Cape.csv
-    print("正在轉換本地 cape.csv...")
+    # 3. 自動偵測並讀取 CAPE 檔案 (不分大小寫)
+    print("正在自動搜尋 CAPE 檔案...")
+    cape_lookup = pd.Series()
     try:
-        cape_df = pd.read_csv("cape.csv")
-        cape_df['Date'] = pd.to_datetime(cape_df['Date'])
-        # 將日期格式化為「年-月」
-        cape_df['YM'] = cape_df['Date'].dt.to_period('M')
-        # 同月份的每一天都設為同一個數值
-        cape_lookup = cape_df.groupby('YM')['Value'].last().rename('cape')
+        # 找出資料夾內所有 .csv 檔案，並不分大小寫搜尋 "cape"
+        target_file = None
+        for f in os.listdir('.'):
+            if f.lower().startswith('cape') and f.endswith('.csv'):
+                target_file = f
+                break
+        
+        if target_file:
+            print(f"🎯 找到檔案: {target_file}")
+            cape_df = pd.read_csv(target_file)
+            cape_df['Date'] = pd.to_datetime(cape_df['Date'])
+            cape_df['YM'] = cape_df['Date'].dt.to_period('M')
+            cape_lookup = cape_df.groupby('YM')['Value'].last().rename('CAPE')
+        else:
+            print("❌ 找不到任何開頭為 'cape' 的 CSV 檔案")
     except Exception as e:
-        print(f"❌ CAPE 讀取失敗: {e}")
-        cape_lookup = pd.Series()
+        print(f"❌ 讀取 CAPE 失敗: {e}")
 
-    # 4. 終極合併
+    # 4. 合併資料
     main_df = pd.DataFrame(index=sp500.index)
     main_df['YM'] = main_df.index.to_period('M')
-    
-    # 併入所有指標
     main_df = main_df.join([sp500, sp500ew, vix, hy, tips])
-    # 根據月份對齊 CAPE
     main_df = main_df.merge(cape_lookup, left_on='YM', right_index=True, how='left')
-
-    # 填補空值 (讓週末或假日也有資料)
     main_df = main_df.ffill()
 
     # 5. 輸出結果
     cols = ['SP500', 'SP500EW', 'VIX', 'HY_Spread', 'TIPS_10Y', 'CAPE']
     final_csv = main_df[cols]
     final_csv.index.name = 'Date'
-    # 移除時區資訊確保 Excel 能讀
     final_csv.index = pd.to_datetime(final_csv.index).tz_localize(None)
     final_csv.to_csv("historical_data.csv")
-    print(f"✅ 轉檔完成！總共產出 {len(final_csv)} 筆數據。")
+    print(f"✅ 更新成功！")
 
 if __name__ == "__main__":
     fetch_all_data()
