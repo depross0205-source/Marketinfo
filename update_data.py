@@ -39,7 +39,7 @@ def fetch_all_data():
         # 將日期格式化為「年-月」
         cape_df['YM'] = cape_df['Date'].dt.to_period('M')
         # 同月份的每一天都設為同一個數值
-        cape_lookup = cape_df.groupby('YM')['Value'].last().rename('CAPE')
+        cape_lookup = cape_df.groupby('YM')['Value'].last().rename('cape')
     except Exception as e:
         print(f"❌ CAPE 讀取失敗: {e}")
         cape_lookup = pd.Series()
