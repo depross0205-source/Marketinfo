@@ -7,9 +7,9 @@ import os
 def fetch_all_data():
     start_date = "2003-05-01"
     end_date = datetime.today().strftime('%Y-%m-%d')
-    print(f"🚀 啟動強化清洗程序：{start_date} ~ {end_date}")
+    print(f"🚀 啟動全自動對齊程序：{start_date} ~ {end_date}")
 
-    # 1. 抓取線上資料
+    # 1. 抓取線上日資料
     def get_yf_fix(ticker, name):
         try:
             df = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=False)
@@ -24,46 +24,60 @@ def fetch_all_data():
     except:
         hy = pd.Series(name="HY_Spread"); tips = pd.Series(name="TIPS_10Y")
 
-    # 2. 鋼鐵級 CAPE 處理邏輯
+    # 2. 智慧型 CAPE 處理 (不依賴欄位名稱)
     cape_lookup = pd.Series()
     try:
         target_file = next((f for f in os.listdir('.') if f.lower().startswith('cape') and f.endswith('.csv')), None)
         if target_file:
             print(f"🎯 讀取檔案: {target_file}")
-            # 讀取時自動處理可能的編碼問題
-            cape_df = pd.read_csv(target_file, skipinitialspace=True)
+            # 讀取 CSV，不假設有標題
+            raw_df = pd.read_csv(target_file, header=None)
             
-            # 【解決問題 2】自動修復欄位名稱（移除空格、轉為首字母大寫）
-            cape_df.columns = [str(c).strip().capitalize() for c in cape_df.columns]
+            # 智慧判斷：哪一欄是日期？哪一欄是數值？
+            col_date, col_val = None, None
             
-            if 'Date' in cape_df.columns:
-                # 【解決問題 1】暴力清理日期字串中的所有隱藏字元
-                cape_df['Date'] = cape_df['Date'].astype(str).str.replace(r'[^\w\s,]', '', regex=True).str.strip()
+            for col in raw_df.columns:
+                # 嘗試解析該欄位的第 2 列數據 (避開標題)
+                sample = str(raw_df[col].iloc[1] if len(raw_df) > 1 else raw_df[col].iloc[0])
+                # 如果包含月份單字或斜線，判定為日期
+                if any(m in sample.lower() for m in ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec','/','-']):
+                    col_date = col
+                # 如果可以轉為數字，判定為數值
+                try:
+                    float(sample.replace(',',''))
+                    if col_val is None: col_val = col
+                except: pass
+
+            if col_date is not None and col_val is not None:
+                print(f"✅ 自動識別：第 {col_date+1} 欄為日期，第 {col_val+1} 欄為數值")
                 
-                # 【解決日期解析錯誤】使用最保險的模糊解析，並強制 errors='coerce'
-                cape_df['Date'] = pd.to_datetime(cape_df['Date'], errors='coerce')
+                # 清洗數據
+                cape_df = pd.DataFrame({
+                    'Date': pd.to_datetime(raw_df[col_date], errors='coerce'),
+                    'Value': pd.to_numeric(raw_df[col_val], errors='coerce')
+                }).dropna()
                 
-                # 移除解析失敗的行
-                cape_df = cape_df.dropna(subset=['Date'])
                 cape_df['YM'] = cape_df['Date'].dt.to_period('M')
                 cape_lookup = cape_df.groupby('YM')['Value'].last().rename('CAPE')
             else:
-                print(f"❌ 找不到 'Date' 欄位，現有欄位為: {cape_df.columns.tolist()}")
+                print("❌ 無法識別 CSV 欄位，請確認內容格式")
     except Exception as e:
         print(f"❌ CAPE 處理失敗: {e}")
 
-    # 3. 合併與輸出
+    # 3. 合併與填補
     main_df = pd.DataFrame(index=sp500.index)
     main_df['YM'] = main_df.index.to_period('M')
     main_df = main_df.join([sp500, sp500ew, vix, hy, tips])
-    main_df = main_df.merge(cape_lookup, left_on='YM', right_index=True, how='left').ffill()
+    main_df = main_df.merge(cape_lookup, left_on='YM', right_index=True, how='left')
+    main_df = main_df.ffill().bfill()
 
+    # 4. 輸出 CSV
     cols = ['SP500', 'SP500EW', 'VIX', 'HY_Spread', 'TIPS_10Y', 'CAPE']
-    final_output = main_df[cols]
-    final_output.index.name = 'Date'
-    final_output.index = pd.to_datetime(final_output.index).tz_localize(None)
-    final_output.to_csv("historical_data.csv")
-    print(f"✅ 更新完成！最後日期: {final_output.index[-1]}")
+    final_csv = main_df[cols]
+    final_csv.index.name = 'Date'
+    final_csv.index = pd.to_datetime(final_csv.index).tz_localize(None)
+    final_csv.to_csv("historical_data.csv")
+    print(f"✅ 更新成功！目前資料總數：{len(final_csv)}")
 
 if __name__ == "__main__":
     fetch_all_data()
