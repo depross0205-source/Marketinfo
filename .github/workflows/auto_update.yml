@@ -3,7 +3,7 @@ name: Auto Update Financial Data
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '0 22 * * *' # 每天台灣時間早上 6:00 執行
 
 jobs:
   build:
@@ -19,15 +19,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install yfinance pandas pandas_datareader requests
+          pip install -r requirements.txt
 
-      - name: Run script
+      - name: Run scraper
         run: python update_data.py
 
-      - name: Push CSV back to repo
+      - name: Commit and Push
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add historical_data.csv
-          git commit -m "Auto-update CSV" || exit 0
+          git commit -m "Auto-update financial data" || exit 0
           git push
